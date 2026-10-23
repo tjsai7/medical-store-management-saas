@@ -1,0 +1,963 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------
+// Multi-Tenancy & Platform
+// ----------------------------------------------------
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+model SubscriptionPlan {
+  id          String   @id @default(cuid())
+  name        String
+  code        String   @unique
+  maxBranches Int      @default(1)
+  maxUsers    Int      @default(5)
+  priceInr    Decimal  @db.Decimal(10, 2)
+  interval    String   @default("monthly") // monthly, yearly
+  features    String   @default("[]") // JSON string of features
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenants     Tenant[]
+}
+
+model Tenant {
+  id                 String            @id @default(cuid())
+  name               String
+  slug               String            @unique
+  legalName          String
+  gstin              String?
+  drugLicenseNumber  String?
+  status             TenantStatus      @default(TRIAL)
+  planId             String?
+  plan               SubscriptionPlan? @relation(fields: [planId], references: [id])
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  branches           Branch[]
+  users              User[]
+  roles              Role[]
+  categories         MedicineCategory[]
+  medicines          Medicine[]
+  batches            MedicineBatch[]
+  inventoryBalances  InventoryBalance[]
+  stockLedgerEntries StockLedgerEntry[]
+  vendors            Vendor[]
+  purchaseOrders     PurchaseOrder[]
+  goodsReceipts      GoodsReceipt[]
+  vendorInvoices     VendorInvoice[]
+  vendorPayments     VendorPayment[]
+  purchaseReturns    PurchaseReturn[]
+  salesInvoices      SalesInvoice[]
+  salesReturns       SalesReturn[]
+  prescriptions      Prescription[]
+  stockTransfers     StockTransfer[]
+  stockCounts        StockCount[]
+  stockAdjustments   StockAdjustment[]
+  auditLogs          AuditLog[]
+  notifications      Notification[]
+  businessSettings   BusinessSettings?
+
+  @@index([slug])
+  @@index([status])
+}
+
+model Branch {
+  id                 String             @id @default(cuid())
+  tenantId           String
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name               String
+  code               String
+  address            String?
+  city               String?
+  state              String?
+  pincode            String?
+  phone              String?
+  email              String?
+  gstin              String?
+  dlNumber           String?
+  isMainBranch       Boolean            @default(false)
+  isActive           Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  userAccesses       UserBranchAccess[]
+  batches            MedicineBatch[]
+  inventoryBalances  InventoryBalance[]
+  stockLedgerEntries StockLedgerEntry[]
+  purchaseOrders     PurchaseOrder[]
+  goodsReceipts      GoodsReceipt[]
+  vendorInvoices     VendorInvoice[]
+  salesInvoices      SalesInvoice[]
+  salesReturns       SalesReturn[]
+  purchaseReturns    PurchaseReturn[]
+  prescriptions      Prescription[]
+  originTransfers    StockTransfer[]    @relation("OriginBranch")
+  destTransfers      StockTransfer[]    @relation("DestBranch")
+  stockCounts        StockCount[]
+  stockAdjustments   StockAdjustment[]
+  branchSettings     BranchSettings?
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+// ----------------------------------------------------
+// Identity, Roles & Permissions
+// ----------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+model User {
+  id                 String             @id @default(cuid())
+  tenantId           String?            // Null for Platform Super Admins
+  tenant             Tenant?            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email              String             @unique
+  passwordHash       String
+  fullName           String
+  phone              String?
+  isPlatformAdmin    Boolean            @default(false)
+  status             UserStatus         @default(ACTIVE)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  branchAccesses     UserBranchAccess[]
+  createdPOs         PurchaseOrder[]
+  createdReceipts    GoodsReceipt[]
+  createdSales       SalesInvoice[]
+  createdReturns     SalesReturn[]
+  stockLedgerEntries StockLedgerEntry[]
+  stockCounts        StockCount[]
+  stockAdjustments   StockAdjustment[]
+  auditLogs          AuditLog[]
+  sentTransfers      StockTransfer[]    @relation("SentByUser")
+  receivedTransfers  StockTransfer[]    @relation("ReceivedByUser")
+
+  @@index([tenantId])
+  @@index([email])
+}
+
+model Role {
+  id           String             @id @default(cuid())
+  tenantId     String?            // Null for system preset roles
+  tenant       Tenant?            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name         String
+  code         String
+  description  String?
+  isSystemRole Boolean            @default(false)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  permissions  RolePermission[]
+  userAccesses UserBranchAccess[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  code        String           @unique
+  name        String
+  module      String
+  description String?
+
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+model UserBranchAccess {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id])
+  isDefault Boolean  @default(false)
+
+  @@unique([userId, branchId])
+  @@index([userId])
+  @@index([branchId])
+}
+
+// ----------------------------------------------------
+// Master Medicine Catalog
+// ----------------------------------------------------
+
+enum DrugSchedule {
+  OTC
+  SCHEDULE_H
+  SCHEDULE_H1
+  SCHEDULE_X
+  NARCOTIC
+}
+
+model MedicineCategory {
+  id          String     @id @default(cuid())
+  tenantId    String
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime   @default(now())
+
+  medicines   Medicine[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model Medicine {
+  id                   String             @id @default(cuid())
+  tenantId             String
+  tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name                 String
+  genericName          String?
+  brand                String?
+  manufacturer         String?
+  sku                  String
+  barcode              String?
+  hsnCode              String             @default("3004")
+  categoryId           String?
+  category             MedicineCategory?  @relation(fields: [categoryId], references: [id])
+  dosageForm           String             @default("Tablet") // Tablet, Capsule, Syrup, Injection, Ointment, etc.
+  packUnit             String             @default("Box")
+  dispenseUnit         String             @default("Strip")
+  conversionFactor     Int                @default(1) // Number of dispenseUnits per packUnit
+  drugSchedule         DrugSchedule       @default(OTC)
+  prescriptionRequired Boolean            @default(false)
+  gstRate              Decimal            @default(12.0) @db.Decimal(5, 2) // 0%, 5%, 12%, 18%
+  mrp                  Decimal            @db.Decimal(10, 2)
+  salePrice            Decimal            @db.Decimal(10, 2)
+  purchasePrice        Decimal            @db.Decimal(10, 2)
+  minStockAlert        Int                @default(20)
+  reorderQty           Int                @default(50)
+  storageCondition     String?            // "Cool & Dry Place", "2-8°C Refrigerated"
+  isActive             Boolean            @default(true)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  batches              MedicineBatch[]
+  inventoryBalances    InventoryBalance[]
+  stockLedgerEntries   StockLedgerEntry[]
+  poLines              PurchaseOrderLine[]
+  receiptLines         GoodsReceiptLine[]
+  invoiceLines         VendorInvoiceLine[]
+  saleLines            SalesInvoiceLine[]
+  returnLines          SalesReturnLine[]
+  purchaseReturnLines  PurchaseReturnLine[]
+  transferLines        StockTransferLine[]
+  countLines           StockCountLine[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId])
+  @@index([tenantId, name])
+  @@index([barcode])
+}
+
+// ----------------------------------------------------
+// Batch-Level Inventory & Ledger
+// ----------------------------------------------------
+
+enum BatchStatus {
+  ACTIVE
+  QUARANTINED
+  EXPIRED
+  DEPLETED
+}
+
+model MedicineBatch {
+  id                 String             @id @default(cuid())
+  tenantId           String
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId           String
+  branch             Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  medicineId         String
+  medicine           Medicine           @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  batchNumber        String
+  expiryDate         DateTime
+  mrp                Decimal            @db.Decimal(10, 2)
+  unitSalePrice      Decimal            @db.Decimal(10, 2)
+  unitPurchaseCost   Decimal            @db.Decimal(10, 2)
+  gstRate            Decimal            @db.Decimal(5, 2)
+  status             BatchStatus        @default(ACTIVE)
+  supplierId         String?
+  supplier           Vendor?            @relation(fields: [supplierId], references: [id])
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  inventoryBalances  InventoryBalance[]
+  stockLedgerEntries StockLedgerEntry[]
+  receiptLines       GoodsReceiptLine[]
+  saleLines          SalesInvoiceLine[]
+  transferLines      StockTransferLine[]
+  countLines         StockCountLine[]
+
+  @@unique([tenantId, branchId, medicineId, batchNumber])
+  @@index([tenantId, branchId])
+  @@index([expiryDate])
+  @@index([status])
+}
+
+model InventoryBalance {
+  id               String        @id @default(cuid())
+  tenantId         String
+  tenant           Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId         String
+  branch           Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  medicineId       String
+  medicine         Medicine      @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  batchId          String
+  batch            MedicineBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  quantityOnHand   Decimal       @default(0) @db.Decimal(12, 3)
+  quantityReserved Decimal       @default(0) @db.Decimal(12, 3)
+  reorderLevel     Decimal       @default(10) @db.Decimal(12, 3)
+  lastReconciledAt DateTime      @default(now())
+
+  @@unique([branchId, batchId])
+  @@index([tenantId, branchId])
+  @@index([medicineId])
+}
+
+enum MovementType {
+  PURCHASE_RECEIPT
+  SALE
+  SALE_RETURN
+  PURCHASE_RETURN
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUSTMENT_POSITIVE
+  ADJUSTMENT_NEGATIVE
+  DAMAGE_EXPIRY_WRITEOFF
+}
+
+model StockLedgerEntry {
+  id              String        @id @default(cuid())
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  medicineId      String
+  medicine        Medicine      @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  batchId         String
+  batch           MedicineBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  movementType    MovementType
+  quantityDelta   Decimal       @db.Decimal(12, 3) // Positive for additions, negative for deductions
+  balanceAfter    Decimal       @db.Decimal(12, 3)
+  costPerUnit     Decimal       @db.Decimal(10, 2)
+  referenceType   String        // "GOODS_RECEIPT", "SALES_INVOICE", "TRANSFER", "STOCK_COUNT", "PURCHASE_RETURN"
+  referenceId     String?
+  notes           String?
+  createdByUserId String?
+  createdByUser   User?         @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime      @default(now())
+
+  @@index([tenantId, branchId])
+  @@index([medicineId])
+  @@index([batchId])
+  @@index([createdAt])
+}
+
+// ----------------------------------------------------
+// Procurement & Vendors
+// ----------------------------------------------------
+
+enum VendorStatus {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+model Vendor {
+  id                 String          @id @default(cuid())
+  tenantId           String
+  tenant             Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  code               String
+  name               String
+  contactPerson      String?
+  phone              String
+  email              String?
+  address            String?
+  city               String?
+  state              String?
+  pincode            String?
+  gstin              String?
+  dlNumber           String?
+  paymentTermsDays   Int             @default(30)
+  creditLimit        Decimal         @default(0) @db.Decimal(12, 2)
+  bankName           String?
+  bankAccountNumber  String?
+  bankIfsc           String?
+  outstandingBalance Decimal         @default(0) @db.Decimal(12, 2)
+  status             VendorStatus    @default(ACTIVE)
+  notes              String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  batches            MedicineBatch[]
+  purchaseOrders     PurchaseOrder[]
+  goodsReceipts      GoodsReceipt[]
+  vendorInvoices     VendorInvoice[]
+  vendorPayments     VendorPayment[]
+  purchaseReturns    PurchaseReturn[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+enum POStatus {
+  DRAFT
+  ORDERED
+  PARTIALLY_RECEIVED
+  COMPLETED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id              String              @id @default(cuid())
+  tenantId        String
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  vendorId        String
+  vendor          Vendor              @relation(fields: [vendorId], references: [id])
+  poNumber        String
+  expectedDate    DateTime?
+  status          POStatus            @default(DRAFT)
+  subtotal        Decimal             @db.Decimal(12, 2)
+  taxAmount       Decimal             @db.Decimal(12, 2)
+  discountAmount  Decimal             @default(0) @db.Decimal(12, 2)
+  grandTotal      Decimal             @db.Decimal(12, 2)
+  notes           String?
+  createdById     String
+  createdBy       User                @relation(fields: [createdById], references: [id])
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  lines           PurchaseOrderLine[]
+  goodsReceipts   GoodsReceipt[]
+  vendorInvoices  VendorInvoice[]
+
+  @@unique([tenantId, poNumber])
+  @@index([tenantId, branchId])
+}
+
+model PurchaseOrderLine {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  medicineId      String
+  medicine        Medicine      @relation(fields: [medicineId], references: [id])
+  quantity        Decimal       @db.Decimal(12, 3)
+  receivedQty     Decimal       @default(0) @db.Decimal(12, 3)
+  unitCost        Decimal       @db.Decimal(10, 2)
+  discountPercent Decimal       @default(0) @db.Decimal(5, 2)
+  gstRate         Decimal       @db.Decimal(5, 2)
+  lineTotal       Decimal       @db.Decimal(12, 2)
+}
+
+enum GRNStatus {
+  DRAFT
+  POSTED
+  CANCELLED
+}
+
+model GoodsReceipt {
+  id              String             @id @default(cuid())
+  tenantId        String
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  vendorId        String
+  vendor          Vendor             @relation(fields: [vendorId], references: [id])
+  poId            String?
+  purchaseOrder   PurchaseOrder?     @relation(fields: [poId], references: [id])
+  grnNumber       String
+  receiptDate     DateTime           @default(now())
+  status          GRNStatus          @default(POSTED)
+  supplierChallan String?
+  notes           String?
+  receivedById    String
+  receivedBy      User               @relation(fields: [receivedById], references: [id])
+  createdAt       DateTime           @default(now())
+
+  lines           GoodsReceiptLine[]
+  vendorInvoices  VendorInvoice[]
+
+  @@unique([tenantId, grnNumber])
+  @@index([tenantId, branchId])
+}
+
+model GoodsReceiptLine {
+  id             String        @id @default(cuid())
+  goodsReceiptId String
+  goodsReceipt   GoodsReceipt  @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  medicineId     String
+  medicine       Medicine      @relation(fields: [medicineId], references: [id])
+  batchId        String
+  batch          MedicineBatch @relation(fields: [batchId], references: [id])
+  batchNumber    String
+  expiryDate     DateTime
+  quantity       Decimal       @db.Decimal(12, 3)
+  freeQuantity   Decimal       @default(0) @db.Decimal(12, 3)
+  unitPurchaseCost Decimal     @db.Decimal(10, 2)
+  mrp            Decimal       @db.Decimal(10, 2)
+  gstRate        Decimal       @db.Decimal(5, 2)
+}
+
+enum InvoiceStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+model VendorInvoice {
+  id              String              @id @default(cuid())
+  tenantId        String
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  vendorId        String
+  vendor          Vendor              @relation(fields: [vendorId], references: [id])
+  poId            String?
+  purchaseOrder   PurchaseOrder?      @relation(fields: [poId], references: [id])
+  grnId           String?
+  goodsReceipt    GoodsReceipt?       @relation(fields: [grnId], references: [id])
+  invoiceNumber   String              // Vendor's invoice number
+  invoiceDate     DateTime
+  dueDate         DateTime
+  subtotal        Decimal             @db.Decimal(12, 2)
+  taxAmount       Decimal             @db.Decimal(12, 2)
+  discountAmount  Decimal             @default(0) @db.Decimal(12, 2)
+  roundOff        Decimal             @default(0) @db.Decimal(10, 2)
+  grandTotal      Decimal             @db.Decimal(12, 2)
+  paidAmount      Decimal             @default(0) @db.Decimal(12, 2)
+  status          InvoiceStatus       @default(PENDING)
+  attachmentUrl   String?
+  notes           String?
+  createdAt       DateTime            @default(now())
+
+  lines           VendorInvoiceLine[]
+  payments        VendorPayment[]
+
+  @@unique([tenantId, vendorId, invoiceNumber])
+  @@index([tenantId, branchId])
+  @@index([status])
+}
+
+model VendorInvoiceLine {
+  id              String        @id @default(cuid())
+  vendorInvoiceId String
+  vendorInvoice   VendorInvoice @relation(fields: [vendorInvoiceId], references: [id], onDelete: Cascade)
+  medicineId      String
+  medicine        Medicine      @relation(fields: [medicineId], references: [id])
+  quantity        Decimal       @db.Decimal(12, 3)
+  unitCost        Decimal       @db.Decimal(10, 2)
+  discountAmount  Decimal       @default(0) @db.Decimal(10, 2)
+  gstRate         Decimal       @db.Decimal(5, 2)
+  lineTotal       Decimal       @db.Decimal(12, 2)
+}
+
+model VendorPayment {
+  id              String        @id @default(cuid())
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vendorId        String
+  vendor          Vendor        @relation(fields: [vendorId], references: [id])
+  invoiceId       String?
+  invoice         VendorInvoice? @relation(fields: [invoiceId], references: [id])
+  paymentNumber   String
+  paymentDate     DateTime      @default(now())
+  amount          Decimal       @db.Decimal(12, 2)
+  paymentMode     String        // NEFT, RTGS, CHEQUE, UPI, CASH
+  referenceNumber String?
+  notes           String?
+  createdAt       DateTime      @default(now())
+
+  @@index([tenantId])
+}
+
+model PurchaseReturn {
+  id              String               @id @default(cuid())
+  tenantId        String
+  tenant          Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch               @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  vendorId        String
+  vendor          Vendor               @relation(fields: [vendorId], references: [id])
+  returnNumber    String
+  returnDate      DateTime             @default(now())
+  reason          String
+  totalAmount     Decimal              @db.Decimal(12, 2)
+  creditNoteNumber String?
+  status          String               @default("COMPLETED")
+  createdAt       DateTime             @default(now())
+
+  lines           PurchaseReturnLine[]
+
+  @@unique([tenantId, returnNumber])
+  @@index([tenantId, branchId])
+}
+
+model PurchaseReturnLine {
+  id               String         @id @default(cuid())
+  purchaseReturnId String
+  purchaseReturn   PurchaseReturn @relation(fields: [purchaseReturnId], references: [id], onDelete: Cascade)
+  medicineId       String
+  medicine         Medicine       @relation(fields: [medicineId], references: [id])
+  batchNumber      String
+  quantity         Decimal        @db.Decimal(12, 3)
+  unitCost         Decimal        @db.Decimal(10, 2)
+  total            Decimal        @db.Decimal(12, 2)
+}
+
+// ----------------------------------------------------
+// Sales & Point of Sale (POS)
+// ----------------------------------------------------
+
+enum PaymentStatus {
+  PAID
+  PARTIALLY_PAID
+  UNPAID
+  REFUNDED
+  VOIDED
+}
+
+model SalesInvoice {
+  id              String             @id @default(cuid())
+  tenantId        String
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  invoiceNumber   String
+  customerName    String?            @default("Walk-in Customer")
+  customerPhone   String?
+  doctorName      String?
+  doctorRegNumber String?
+  prescriptionId  String?
+  prescription    Prescription?      @relation(fields: [prescriptionId], references: [id])
+  subtotal        Decimal            @db.Decimal(12, 2)
+  discountAmount  Decimal            @default(0) @db.Decimal(12, 2)
+  taxableAmount   Decimal            @db.Decimal(12, 2)
+  cgstAmount      Decimal            @default(0) @db.Decimal(12, 2)
+  sgstAmount      Decimal            @default(0) @db.Decimal(12, 2)
+  igstAmount      Decimal            @default(0) @db.Decimal(12, 2)
+  roundOff        Decimal            @default(0) @db.Decimal(10, 2)
+  grandTotal      Decimal            @db.Decimal(12, 2)
+  paidAmount      Decimal            @default(0) @db.Decimal(12, 2)
+  paymentStatus   PaymentStatus      @default(PAID)
+  isVoid          Boolean            @default(false)
+  voidReason      String?
+  notes           String?
+  createdById     String
+  createdBy       User               @relation(fields: [createdById], references: [id])
+  createdAt       DateTime           @default(now())
+
+  lines           SalesInvoiceLine[]
+  payments        SalesPayment[]
+  returns         SalesReturn[]
+
+  @@unique([tenantId, branchId, invoiceNumber])
+  @@index([tenantId, branchId])
+  @@index([createdAt])
+}
+
+model SalesInvoiceLine {
+  id              String        @id @default(cuid())
+  salesInvoiceId  String
+  salesInvoice    SalesInvoice  @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
+  medicineId      String
+  medicine        Medicine      @relation(fields: [medicineId], references: [id])
+  batchId         String
+  batch           MedicineBatch @relation(fields: [batchId], references: [id])
+  quantity        Decimal       @db.Decimal(12, 3)
+  unitSalePrice   Decimal       @db.Decimal(10, 2)
+  mrp             Decimal       @db.Decimal(10, 2)
+  discountPercent Decimal       @default(0) @db.Decimal(5, 2)
+  discountAmount  Decimal       @default(0) @db.Decimal(10, 2)
+  gstRate         Decimal       @db.Decimal(5, 2)
+  taxableAmount   Decimal       @db.Decimal(12, 2)
+  cgstAmount      Decimal       @default(0) @db.Decimal(12, 2)
+  sgstAmount      Decimal       @default(0) @db.Decimal(12, 2)
+  igstAmount      Decimal       @default(0) @db.Decimal(12, 2)
+  total           Decimal       @db.Decimal(12, 2)
+}
+
+model SalesPayment {
+  id             String       @id @default(cuid())
+  salesInvoiceId String
+  salesInvoice   SalesInvoice @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
+  method         String       // CASH, UPI, CARD, CREDIT
+  amount         Decimal      @db.Decimal(12, 2)
+  referenceNo    String?
+  createdAt      DateTime     @default(now())
+}
+
+model SalesReturn {
+  id              String            @id @default(cuid())
+  tenantId        String
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  invoiceId       String
+  salesInvoice    SalesInvoice      @relation(fields: [invoiceId], references: [id])
+  returnNumber    String
+  customerName    String?
+  reason          String
+  refundAmount    Decimal           @db.Decimal(12, 2)
+  refundMode      String            @default("CASH") // CASH, UPI, CREDIT_NOTE
+  createdById     String
+  createdBy       User              @relation(fields: [createdById], references: [id])
+  createdAt       DateTime          @default(now())
+
+  lines           SalesReturnLine[]
+
+  @@unique([tenantId, returnNumber])
+  @@index([tenantId, branchId])
+}
+
+model SalesReturnLine {
+  id            String      @id @default(cuid())
+  salesReturnId String
+  salesReturn   SalesReturn @relation(fields: [salesReturnId], references: [id], onDelete: Cascade)
+  medicineId    String
+  medicine      Medicine    @relation(fields: [medicineId], references: [id])
+  batchNumber   String
+  quantity      Decimal     @db.Decimal(12, 3)
+  refundRate    Decimal     @db.Decimal(10, 2)
+  total         Decimal     @db.Decimal(12, 2)
+}
+
+enum PrescriptionStatus {
+  PENDING
+  VERIFIED
+  DISPENSED
+  REJECTED
+}
+
+model Prescription {
+  id                 String             @id @default(cuid())
+  tenantId           String
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId           String
+  branch             Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerName       String
+  customerPhone      String?
+  doctorName         String
+  doctorRegNumber    String?
+  fileUrl            String?
+  verificationStatus PrescriptionStatus @default(VERIFIED)
+  pharmacistNotes    String?
+  createdAt          DateTime           @default(now())
+
+  salesInvoices      SalesInvoice[]
+
+  @@index([tenantId, branchId])
+}
+
+// ----------------------------------------------------
+// Multi-Branch Transfers & Stock Taking
+// ----------------------------------------------------
+
+enum TransferStatus {
+  DRAFT
+  REQUESTED
+  APPROVED
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+model StockTransfer {
+  id                 String              @id @default(cuid())
+  tenantId           String
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  originBranchId     String
+  originBranch       Branch              @relation("OriginBranch", fields: [originBranchId], references: [id])
+  destBranchId       String
+  destBranch         Branch              @relation("DestBranch", fields: [destBranchId], references: [id])
+  transferNumber     String
+  status             TransferStatus      @default(DRAFT)
+  notes              String?
+  sentByUserId       String?
+  sentByUser         User?               @relation("SentByUser", fields: [sentByUserId], references: [id])
+  sentAt             DateTime?
+  receivedByUserId   String?
+  receivedByUser     User?               @relation("ReceivedByUser", fields: [receivedByUserId], references: [id])
+  receivedAt         DateTime?
+  createdAt          DateTime            @default(now())
+
+  lines              StockTransferLine[]
+
+  @@unique([tenantId, transferNumber])
+  @@index([tenantId])
+}
+
+model StockTransferLine {
+  id              String        @id @default(cuid())
+  stockTransferId String
+  stockTransfer   StockTransfer @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+  medicineId      String
+  medicine        Medicine      @relation(fields: [medicineId], references: [id])
+  batchId         String
+  batch           MedicineBatch @relation(fields: [batchId], references: [id])
+  quantity        Decimal       @db.Decimal(12, 3)
+  receivedQty     Decimal       @default(0) @db.Decimal(12, 3)
+}
+
+enum StockCountStatus {
+  IN_PROGRESS
+  SUBMITTED
+  APPROVED
+  CANCELLED
+}
+
+model StockCount {
+  id              String           @id @default(cuid())
+  tenantId        String
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  countNumber     String
+  title           String
+  status          StockCountStatus @default(IN_PROGRESS)
+  notes           String?
+  countedById     String
+  countedBy       User             @relation(fields: [countedById], references: [id])
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  lines           StockCountLine[]
+
+  @@unique([tenantId, countNumber])
+  @@index([tenantId, branchId])
+}
+
+model StockCountLine {
+  id           String        @id @default(cuid())
+  stockCountId String
+  stockCount   StockCount    @relation(fields: [stockCountId], references: [id], onDelete: Cascade)
+  medicineId   String
+  medicine     Medicine      @relation(fields: [medicineId], references: [id])
+  batchId      String
+  batch        MedicineBatch @relation(fields: [batchId], references: [id])
+  systemQty    Decimal       @db.Decimal(12, 3)
+  countedQty   Decimal       @db.Decimal(12, 3)
+  varianceQty  Decimal       @db.Decimal(12, 3) // counted - system
+  varianceCost Decimal       @db.Decimal(12, 2)
+  reason       String?
+}
+
+model StockAdjustment {
+  id               String       @id @default(cuid())
+  tenantId         String
+  tenant           Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId         String
+  branch           Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  adjustmentNumber String
+  adjustmentDate   DateTime     @default(now())
+  reason           String       // EXPIRY_WRITEOFF, DAMAGED, PHYSICAL_COUNT_VARIANCE, THEFT
+  totalAmount      Decimal      @db.Decimal(12, 2)
+  status           String       @default("APPROVED")
+  createdById      String
+  createdBy        User         @relation(fields: [createdById], references: [id])
+  createdAt        DateTime     @default(now())
+
+  @@unique([tenantId, adjustmentNumber])
+  @@index([tenantId, branchId])
+}
+
+// ----------------------------------------------------
+// Governance, Audit & Notifications
+// ----------------------------------------------------
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  action      String   // CREATE, UPDATE, DELETE, APPROVE, POST, VOID
+  entityType  String   // MEDICINE, BATCH, INVOICE, PO, USER, SETTINGS
+  entityId    String
+  details     String?  // JSON string of before/after or payload
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([entityType, entityId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId  String?
+  title     String
+  message   String
+  type      String   // LOW_STOCK, NEAR_EXPIRY, PO_APPROVAL, TRANSFER_IN_TRANSIT
+  isRead    Boolean  @default(false)
+  linkUrl   String?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, isRead])
+}
+
+model BusinessSettings {
+  id                 String   @id @default(cuid())
+  tenantId           String   @unique
+  tenant             Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  legalName          String
+  tradeName          String
+  contactPhone       String
+  contactEmail       String?
+  address            String?
+  state              String   @default("Telangana")
+  gstin              String?
+  drugLicense20B     String?
+  drugLicense21B     String?
+  currency           String   @default("INR")
+  financialYearStart String   @default("04-01")
+  fefoAllocation     Boolean  @default(true)
+  allowNegativeStock Boolean  @default(false)
+  nearExpiryDays     Int      @default(60)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model BranchSettings {
+  id              String   @id @default(cuid())
+  branchId        String   @unique
+  branch          Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  invoicePrefix   String   @default("INV-")
+  nextInvoiceNum  Int      @default(1001)
+  receiptPrinter  String   @default("80mm_thermal") // 80mm_thermal, 58mm_thermal, a4
+  receiptHeader   String?
+  receiptFooter   String?  @default("Thank you for your visit. Get well soon!")
+  taxInclusivePOS Boolean  @default(true)
+}
